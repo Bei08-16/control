@@ -371,13 +371,18 @@ for i=1:N
 end
 
 function tau = compute_tau_pid(X, J, qd, pid)
-% X: Nx10 [q(4) w(3) int_e(3)]
+% X: Nx10 [q(4) w(3) int_e(3)] (兼容无积分状态的 Nx7)
 N = size(X,1);
 tau = zeros(N,3);
+has_int = size(X,2) >= 10;
 for i=1:N
     q = quat_normalize(X(i,1:4)');
     w = X(i,5:7)';
-    ie = X(i,8:10)';
+    if has_int
+        ie = X(i,8:10)';
+    else
+        ie = zeros(3,1);
+    end
 
     qe = quat_mul(quat_conj(qd), q);
     qe = shortest_quat(qe);
