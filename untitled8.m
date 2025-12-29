@@ -1,11 +1,12 @@
 function experiment1_attitude_compare()
-% 实验一：无扰动下的快速收敛性验证（基准性能）
+% 实验一：无扰动 + 大初始误差自稳（基准性能）
 % 对比：PID / 常规 SMC / FFTSMC（基于四元数）
 %
 % 输出图：
-% 1) 欧拉角响应对比（roll/pitch/yaw）
-% 2) 误差四元数矢量部 e_v 收敛曲线
-% 3) 相平面图：phi vs phidot（以 roll 为例）
+% 1) 姿态误差角 theta_e(t)
+% 2) 误差四元数矢量部 e = [e1,e2,e3]
+% 3) 角速度 wx, wy, wz
+% 4) 控制力矩 tau_x, tau_y, tau_z
 
 clc; clear; close all;
 
@@ -20,15 +21,15 @@ J = diag([0.02, 0.02, 0.04]);
 % 期望姿态：单位四元数（对齐）
 qd = [1; 0; 0; 0];
 
-% 初始姿态（给定欧拉角，按 ZYX: yaw-pitch-roll 转四元数）
-roll0  = deg2rad(30);
-pitch0 = deg2rad(-20);
-yaw0   = deg2rad(45);
-q0 = eulZYX_to_quat(roll0, pitch0, yaw0);  % [q0;q1;q2;q3]
+% 初始姿态（轴-角生成四元数，避免欧拉角）
+axis0 = [1; -0.6; 0.8];
+axis0 = axis0 ./ norm(axis0);
+angle0 = deg2rad(110);
+q0 = [cos(angle0/2); axis0*sin(angle0/2)];
 q0 = quat_normalize(q0);
 
-% 初始角速度（机体系）
-w0 = [0.1; -0.1; 0.05];
+% 初始角速度（机体系，中等幅值）
+w0 = [0.2; -0.15; 0.1];
 
 % 外部扰动（本实验：无扰动）
 d = [0; 0; 0]; %#ok<NASGU>
@@ -89,31 +90,24 @@ wf = Xf(:,5:7);
 [qe_s, ev_s] = quat_error_series(qs, qd);
 [qe_f, ev_f] = quat_error_series(qf, qd);
 
-% 欧拉角（用于展示：roll/pitch/yaw）
-eul_p = quat_to_eulZYX_series(qp);
-eul_s = quat_to_eulZYX_series(qs);
-eul_f = quat_to_eulZYX_series(qf);
+% 姿态误差角
+theta_p = quat_error_angle(qe_p);
+theta_s = quat_error_angle(qe_s);
+theta_f = quat_error_angle(qe_f);
 
-%% ========== 图1：欧拉角响应对比 ==========
-figure('Name','Euler Angle Response','Color','w');
-subplot(3,1,1);
-plot(t_grid, rad2deg(eul_p(:,1)),'LineWidth',1.2); hold on;
-plot(t_grid, rad2deg(eul_s(:,1)),'LineWidth',1.2);
-plot(t_grid, rad2deg(eul_f(:,1)),'LineWidth',1.2);
-grid on; ylabel('\phi (deg)'); title('Roll Response');
+% 控制力矩
+tau_p = compute_tau_pid(Xp, J, qd, pid);
+tau_s = compute_tau_smc(qs, ws, J, qd, smc);
+tau_f = compute_tau_fftsmc(qf, wf, J, qd, ffts);
+
+%% ========== 图1：姿态误差角 theta_e(t) ==========
+figure('Name','Attitude Error Angle','Color','w');
+plot(t_grid, rad2deg(theta_p),'LineWidth',1.2); hold on;
+plot(t_grid, rad2deg(theta_s),'LineWidth',1.2);
+plot(t_grid, rad2deg(theta_f),'LineWidth',1.2);
+grid on; ylabel('\theta_e (deg)'); xlabel('Time (s)');
+title('Attitude Error Angle');
 legend('PID','SMC','FFTSMC','Location','best');
-
-subplot(3,1,2);
-plot(t_grid, rad2deg(eul_p(:,2)),'LineWidth',1.2); hold on;
-plot(t_grid, rad2deg(eul_s(:,2)),'LineWidth',1.2);
-plot(t_grid, rad2deg(eul_f(:,2)),'LineWidth',1.2);
-grid on; ylabel('\theta (deg)'); title('Pitch Response');
-
-subplot(3,1,3);
-plot(t_grid, rad2deg(eul_p(:,3)),'LineWidth',1.2); hold on;
-plot(t_grid, rad2deg(eul_s(:,3)),'LineWidth',1.2);
-plot(t_grid, rad2deg(eul_f(:,3)),'LineWidth',1.2);
-grid on; ylabel('\psi (deg)'); xlabel('Time (s)'); title('Yaw Response');
 
 %% ========== 图2：姿态误差四元数矢量部 e_v 收敛曲线 ==========
 figure('Name','Quaternion Vector Error','Color','w');
@@ -136,20 +130,49 @@ plot(t_grid, ev_s(:,3),'LineWidth',1.2);
 plot(t_grid, ev_f(:,3),'LineWidth',1.2);
 grid on; ylabel('e_3'); xlabel('Time (s)');
 
-%% ========== 图3：相平面图（以 roll 误差 phi vs phidot 为例） ==========
-% 这里 phi 使用欧拉角 roll，phidot 用数值微分（rad/s）
-phi_p = eul_p(:,1); phi_s = eul_s(:,1); phi_f = eul_f(:,1);
-phidot_p = gradient(phi_p, dt_plot);
-phidot_s = gradient(phi_s, dt_plot);
-phidot_f = gradient(phi_f, dt_plot);
-
-figure('Name','Phase Plot (Roll)','Color','w');
-plot(phi_p, phidot_p, 'LineWidth',1.2); hold on;
-plot(phi_s, phidot_s, 'LineWidth',1.2);
-plot(phi_f, phidot_f, 'LineWidth',1.2);
-grid on; xlabel('\phi (rad)'); ylabel('\dot{\phi} (rad/s)');
-title('Phase Plot: \phi vs \dot{\phi}');
+%% ========== 图3：角速度 wx, wy, wz ==========
+figure('Name','Angular Velocity','Color','w');
+subplot(3,1,1);
+plot(t_grid, wp(:,1),'LineWidth',1.2); hold on;
+plot(t_grid, ws(:,1),'LineWidth',1.2);
+plot(t_grid, wf(:,1),'LineWidth',1.2);
+grid on; ylabel('\omega_x (rad/s)'); title('Angular Velocity \omega_x');
 legend('PID','SMC','FFTSMC','Location','best');
+
+subplot(3,1,2);
+plot(t_grid, wp(:,2),'LineWidth',1.2); hold on;
+plot(t_grid, ws(:,2),'LineWidth',1.2);
+plot(t_grid, wf(:,2),'LineWidth',1.2);
+grid on; ylabel('\omega_y (rad/s)'); title('Angular Velocity \omega_y');
+
+subplot(3,1,3);
+plot(t_grid, wp(:,3),'LineWidth',1.2); hold on;
+plot(t_grid, ws(:,3),'LineWidth',1.2);
+plot(t_grid, wf(:,3),'LineWidth',1.2);
+grid on; ylabel('\omega_z (rad/s)'); xlabel('Time (s)');
+title('Angular Velocity \omega_z');
+
+%% ========== 图4：控制力矩 tau_x, tau_y, tau_z ==========
+figure('Name','Control Torque','Color','w');
+subplot(3,1,1);
+plot(t_grid, tau_p(:,1),'LineWidth',1.2); hold on;
+plot(t_grid, tau_s(:,1),'LineWidth',1.2);
+plot(t_grid, tau_f(:,1),'LineWidth',1.2);
+grid on; ylabel('\tau_x (N·m)'); title('Control Torque \tau_x');
+legend('PID','SMC','FFTSMC','Location','best');
+
+subplot(3,1,2);
+plot(t_grid, tau_p(:,2),'LineWidth',1.2); hold on;
+plot(t_grid, tau_s(:,2),'LineWidth',1.2);
+plot(t_grid, tau_f(:,2),'LineWidth',1.2);
+grid on; ylabel('\tau_y (N·m)'); title('Control Torque \tau_y');
+
+subplot(3,1,3);
+plot(t_grid, tau_p(:,3),'LineWidth',1.2); hold on;
+plot(t_grid, tau_s(:,3),'LineWidth',1.2);
+plot(t_grid, tau_f(:,3),'LineWidth',1.2);
+grid on; ylabel('\tau_z (N·m)'); xlabel('Time (s)');
+title('Control Torque \tau_z');
 
 %% ========== 可选：打印收敛信息 ==========
 fprintf('Done.\n');
@@ -319,46 +342,11 @@ function y = clamp_vec(x, lim)
 y = min(max(x, -lim), lim);
 end
 
-function q = eulZYX_to_quat(roll, pitch, yaw)
-% ZYX: yaw(Z) - pitch(Y) - roll(X)
-cy = cos(yaw*0.5);  sy = sin(yaw*0.5);
-cp = cos(pitch*0.5);sp = sin(pitch*0.5);
-cr = cos(roll*0.5); sr = sin(roll*0.5);
-
-q0 = cr*cp*cy + sr*sp*sy;
-q1 = sr*cp*cy - cr*sp*sy;
-q2 = cr*sp*cy + sr*cp*sy;
-q3 = cr*cp*sy - sr*sp*cy;
-
-q = [q0; q1; q2; q3];
-end
-
-function eul = quat_to_eulZYX_series(Q)
-% Q: Nx4, each row [q0 q1 q2 q3]
-N = size(Q,1);
-eul = zeros(N,3);
-for i=1:N
-    q = Q(i,:)';
-    q = quat_normalize(q);
-    q0=q(1); q1=q(2); q2=q(3); q3=q(4);
-
-    % roll
-    sinr = 2*(q0*q1 + q2*q3);
-    cosr = 1 - 2*(q1*q1 + q2*q2);
-    roll = atan2(sinr, cosr);
-
-    % pitch
-    sinp = 2*(q0*q2 - q3*q1);
-    sinp = max(-1, min(1, sinp));
-    pitch = asin(sinp);
-
-    % yaw
-    siny = 2*(q0*q3 + q1*q2);
-    cosy = 1 - 2*(q2*q2 + q3*q3);
-    yaw = atan2(siny, cosy);
-
-    eul(i,:) = [roll, pitch, yaw];
-end
+function theta = quat_error_angle(QE)
+% QE: Nx4 error quaternion, return angle in rad
+qe0 = QE(:,1);
+qe0 = min(1, max(-1, qe0));
+theta = 2 * acos(qe0);
 end
 
 function Qn = normalize_rows_quat(Q)
@@ -380,5 +368,89 @@ for i=1:N
     qe = shortest_quat(qe);
     QE(i,:) = qe.';
     EV(i,:) = qe(2:4).';
+end
+
+function tau = compute_tau_pid(X, J, qd, pid)
+% X: Nx10 [q(4) w(3) int_e(3)] (兼容无积分状态的 Nx7)
+N = size(X,1);
+tau = zeros(N,3);
+has_int = size(X,2) >= 10;
+for i=1:N
+    q = quat_normalize(X(i,1:4)');
+    w = X(i,5:7)';
+    if has_int
+        ie = X(i,8:10)';
+    else
+        ie = zeros(3,1);
+    end
+
+    qe = quat_mul(quat_conj(qd), q);
+    qe = shortest_quat(qe);
+    e = qe(2:4);
+
+    w_dot_cmd = -pid.Kp*e - pid.Kd*w - pid.Ki*ie;
+    tau(i,:) = (cross(w, J*w) + J*w_dot_cmd).';
+end
+end
+
+function tau = compute_tau_smc(Q, W, J, qd, smc)
+% Q: Nx4, W: Nx3
+N = size(Q,1);
+tau = zeros(N,3);
+for i=1:N
+    q = quat_normalize(Q(i,:)');
+    w = W(i,:)';
+    qe = quat_mul(quat_conj(qd), q);
+    qe = shortest_quat(qe);
+    e = qe(2:4);
+    qe0 = qe(1);
+
+    A = 0.5*(qe0*eye(3) + skew3(e));
+    e_dot = A*w;
+
+    s = w + smc.c*e;
+    sat_s = sat_vec(s, smc.phi);
+    w_dot_cmd = -smc.c*e_dot - smc.K*s - smc.eta*sat_s;
+
+    tau(i,:) = (cross(w, J*w) + J*w_dot_cmd).';
+end
+end
+
+function tau = compute_tau_fftsmc(Q, W, J, qd, ffts)
+% Q: Nx4, W: Nx3
+N = size(Q,1);
+tau = zeros(N,3);
+for i=1:N
+    q = quat_normalize(Q(i,:)');
+    w = W(i,:)';
+
+    qe = quat_mul(quat_conj(qd), q);
+    qe = shortest_quat(qe);
+    e = qe(2:4);
+    qe0 = qe(1);
+
+    A = 0.5*(qe0*eye(3) + skew3(e));
+    e_dot = A*w;
+
+    r1 = ffts.p/ffts.q;
+    r2 = ffts.q/ffts.p;
+    f1 = ffts.lambda1 * sig_pow(e, r1);
+    f2 = ffts.lambda2 * sig_pow(e, r2);
+    s = e_dot + f1 + f2;
+
+    eps0 = 1e-6;
+    dfde1 = ffts.lambda1 * r1 * (abs(e)+eps0).^(r1-1);
+    dfde2 = ffts.lambda2 * r2 * (abs(e)+eps0).^(r2-1);
+    dfde_e_dot = dfde1 .* e_dot + dfde2 .* e_dot;
+
+    e_ddot_cmd = -dfde_e_dot ...
+                - ffts.K1*sig_pow(s, ffts.alpha) ...
+                - ffts.K2*sig_pow(s, ffts.beta)  ...
+                - ffts.K3*s;
+
+    w_dot_cmd = pinv(A) * e_ddot_cmd;
+
+    tau(i,:) = (cross(w, J*w) + J*w_dot_cmd).';
+end
 end
 end
